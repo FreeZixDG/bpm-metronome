@@ -52,17 +52,35 @@ DEFAULT_CLICK_PROFILES = [
         }
 ]
 
-APP_NAME = "BNM Metronome"
+APP_NAME = "BPM Metronome"
+LEGACY_APP_NAMES = ["BNM Metronome"]
 
 
-def get_app_data_dir():
+def get_platform_app_data_dir(app_name):
         if sys.platform.startswith("win"):
                 appdata = os.getenv("APPDATA")
 
                 if appdata:
-                        return Path(appdata) / APP_NAME
+                        return Path(appdata) / app_name
 
-        return Path.home() / f".{APP_NAME.lower().replace(' ', '-')}"
+        return Path.home() / f".{app_name.lower().replace(' ', '-')}"
+
+
+def get_app_data_dir():
+        app_data_dir = get_platform_app_data_dir(APP_NAME)
+
+        for legacy_app_name in LEGACY_APP_NAMES:
+                legacy_app_data_dir = get_platform_app_data_dir(legacy_app_name)
+
+                if legacy_app_data_dir.exists() and not app_data_dir.exists():
+                        try:
+                                legacy_app_data_dir.rename(app_data_dir)
+                        except Exception:
+                                pass
+
+                        break
+
+        return app_data_dir
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -432,7 +450,7 @@ class MetronomeGUI(tk.Tk):
         def __init__(self):
                 super().__init__()
 
-                self.title("Métronome WAV précis")
+                self.title("BPM Metronome")
                 self.geometry("1100x700")
 
                 self.entries = load_entries_from_files()
@@ -747,7 +765,7 @@ class MetronomeGUI(tk.Tk):
         def cleanup_preview_files(self):
                 temp_dir = Path(tempfile.gettempdir())
 
-                for path in temp_dir.glob("bnm-metronome-preview-*.wav"):
+                for path in temp_dir.glob("bpm-metronome-preview-*.wav"):
                         try:
                                 path.unlink()
                         except Exception:
