@@ -43,8 +43,22 @@ CLICK_SETTING_PRESETS = {
         ],
 }
 
+APP_NAME = "BNM Metronome"
+
+
+def get_app_data_dir():
+        if sys.platform.startswith("win"):
+                appdata = os.getenv("APPDATA")
+
+                if appdata:
+                        return Path(appdata) / APP_NAME
+
+        return Path.home() / f".{APP_NAME.lower().replace(' ', '-')}"
+
+
 BASE_DIR = Path(__file__).resolve().parent
-OUT_DIR = BASE_DIR / "metros"
+APP_DATA_DIR = get_app_data_dir()
+OUT_DIR = APP_DATA_DIR / "metros"
 DB_FILE = OUT_DIR / "index.json"
 
 
