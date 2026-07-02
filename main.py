@@ -42,6 +42,15 @@ CLICK_SETTING_PRESETS = {
                 ("Court", 220),
         ],
 }
+DEFAULT_CLICK_PROFILES = [
+        {
+                "name": "default",
+                "click_duration_s": DEFAULT_CLICK_DURATION_S,
+                "click_frequency_hz": float(DEFAULT_CLICK_FREQUENCY_HZ),
+                "click_brightness": DEFAULT_CLICK_BRIGHTNESS,
+                "click_decay": float(DEFAULT_CLICK_DECAY),
+        }
+]
 
 APP_NAME = "BNM Metronome"
 
@@ -60,6 +69,7 @@ BASE_DIR = Path(__file__).resolve().parent
 APP_DATA_DIR = get_app_data_dir()
 OUT_DIR = APP_DATA_DIR / "metros"
 DB_FILE = OUT_DIR / "index.json"
+CLICK_PROFILES_FILE = APP_DATA_DIR / "click_profiles.json"
 
 
 # =========================
@@ -136,7 +146,7 @@ def sanitize_filename(name):
 
 
 def default_filename_from_bpm(bpm):
-        OUT_DIR.mkdir(exist_ok=True)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
 
         n = 1
         while True:
@@ -147,7 +157,7 @@ def default_filename_from_bpm(bpm):
 
 
 def load_db():
-        OUT_DIR.mkdir(exist_ok=True)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
 
         if not DB_FILE.exists():
                 return []
@@ -165,14 +175,14 @@ def load_db():
 
 
 def save_db(entries):
-        OUT_DIR.mkdir(exist_ok=True)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
 
         with DB_FILE.open("w", encoding="utf-8") as f:
                 json.dump(entries, f, indent=2, ensure_ascii=False)
 
 
 def load_entries_from_files():
-        OUT_DIR.mkdir(exist_ok=True)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
 
         db_entries = load_db()
         entries_by_filename = {
@@ -222,6 +232,65 @@ def open_file(path):
                 subprocess.Popen(["open", str(path)])
         else:
                 subprocess.Popen(["xdg-open", str(path)])
+
+
+def load_click_profiles():
+        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        if not CLICK_PROFILES_FILE.exists():
+                save_click_profiles(DEFAULT_CLICK_PROFILES)
+                return [dict(profile) for profile in DEFAULT_CLICK_PROFILES]
+
+        try:
+                with CLICK_PROFILES_FILE.open("r", encoding="utf-8") as f:
+                        data = json.load(f)
+        except Exception:
+                return []
+
+        if not isinstance(data, list):
+                return []
+
+        profiles = []
+
+        for profile in data:
+                if not isinstance(profile, dict):
+                        continue
+
+                name = str(profile.get("name", "")).strip()
+
+                if not name:
+                        continue
+
+                try:
+                        click_duration_s = float(profile["click_duration_s"])
+                        click_frequency_hz = float(profile["click_frequency_hz"])
+                        click_brightness = float(profile["click_brightness"])
+                        click_decay = float(profile["click_decay"])
+                except (KeyError, TypeError, ValueError):
+                        continue
+
+                profiles.append({
+                        "name": name,
+                        "click_duration_s": click_duration_s,
+                        "click_frequency_hz": click_frequency_hz,
+                        "click_brightness": click_brightness,
+                        "click_decay": click_decay,
+                })
+
+        default_profile_exists = any(profile["name"].strip().lower() == "default" for profile in profiles)
+
+        if not default_profile_exists:
+                profiles = [dict(profile) for profile in DEFAULT_CLICK_PROFILES] + profiles
+                save_click_profiles(profiles)
+
+        return profiles
+
+
+def save_click_profiles(profiles):
+        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        with CLICK_PROFILES_FILE.open("w", encoding="utf-8") as f:
+                json.dump(profiles, f, indent=2, ensure_ascii=False)
 
 
 # =========================
@@ -380,6 +449,9 @@ class MetronomeGUI(tk.Tk):
                 self.click_frequency_preset_var = tk.StringVar(value="Moyen")
                 self.click_brightness_preset_var = tk.StringVar(value="Moyenne")
                 self.click_decay_preset_var = tk.StringVar(value="Moyen")
+                self.click_profiles = load_click_profiles()
+                self.click_profile_name_var = tk.StringVar()
+                self.click_profile_var = tk.StringVar(value="Aucun profil")
                 self.rename_var = tk.StringVar()
                 self.rename_index = None
 
@@ -453,6 +525,33 @@ class MetronomeGUI(tk.Tk):
                         command=self.on_preview_click
                 ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
 
+                profile_frame = tk.Frame(sound_frame)
+                profile_frame.grid(row=5, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
+
+                tk.Label(profile_frame, text="Profil :").pack(side="left")
+                tk.Entry(profile_frame, textvariable=self.click_profile_name_var, width=22).pack(side="left", padx=8)
+
+                self.click_profile_menu = tk.OptionMenu(profile_frame, self.click_profile_var, "")
+                self.click_profile_menu.config(width=18)
+                self.click_profile_menu.pack(side="left", padx=4)
+
+                tk.Button(
+                        profile_frame,
+                        text="Sauvegarder profil",
+                        command=self.on_save_click_profile
+                ).pack(side="left", padx=4)
+                tk.Button(
+                        profile_frame,
+                        text="Charger profil",
+                        command=self.on_load_click_profile
+                ).pack(side="left", padx=4)
+                tk.Button(
+                        profile_frame,
+                        text="Supprimer profil",
+                        command=self.on_delete_click_profile
+                ).pack(side="left", padx=4)
+                self.refresh_click_profile_menu()
+
                 list_frame = tk.LabelFrame(main, text="Métronomes générés")
                 list_frame.pack(fill="both", expand=True, pady=10)
 
@@ -499,6 +598,145 @@ class MetronomeGUI(tk.Tk):
         def apply_click_setting_preset(self, value_var, preset_value):
                 value_var.set(format_float(preset_value))
                 self.status_var.set("Preset du bip appliqué.")
+
+        def get_preset_label_for_value(self, preset_key, value):
+                for preset_label, preset_value in CLICK_SETTING_PRESETS[preset_key]:
+                        if abs(preset_value - value) < 1e-9:
+                                return preset_label
+
+                return ""
+
+        def update_click_preset_vars(self, click_params):
+                self.click_duration_preset_var.set(
+                        self.get_preset_label_for_value("duration", click_params["click_duration_s"])
+                )
+                self.click_frequency_preset_var.set(
+                        self.get_preset_label_for_value("frequency", click_params["click_frequency_hz"])
+                )
+                self.click_brightness_preset_var.set(
+                        self.get_preset_label_for_value("brightness", click_params["click_brightness"])
+                )
+                self.click_decay_preset_var.set(
+                        self.get_preset_label_for_value("decay", click_params["click_decay"])
+                )
+
+        def find_click_profile(self, name):
+                normalized_name = name.strip().lower()
+
+                for profile in self.click_profiles:
+                        if profile["name"].strip().lower() == normalized_name:
+                                return profile
+
+                return None
+
+        def on_click_profile_selected(self, name):
+                self.click_profile_var.set(name)
+                self.click_profile_name_var.set(name)
+
+        def refresh_click_profile_menu(self):
+                menu = self.click_profile_menu["menu"]
+                menu.delete(0, tk.END)
+
+                profile_names = [profile["name"] for profile in self.click_profiles]
+
+                if not profile_names:
+                        self.click_profile_var.set("Aucun profil")
+                        self.click_profile_name_var.set("")
+                        menu.add_command(label="Aucun profil", command=lambda: self.click_profile_var.set("Aucun profil"))
+                        return
+
+                current_name = self.click_profile_var.get()
+
+                if current_name not in profile_names:
+                        current_name = profile_names[0]
+                        self.click_profile_var.set(current_name)
+
+                if not self.click_profile_name_var.get().strip():
+                        self.click_profile_name_var.set(current_name)
+
+                for profile_name in profile_names:
+                        menu.add_command(
+                                label=profile_name,
+                                command=lambda name=profile_name: self.on_click_profile_selected(name)
+                        )
+
+        def apply_click_profile(self, profile):
+                self.click_duration_var.set(format_float(profile["click_duration_s"]))
+                self.click_frequency_var.set(format_float(profile["click_frequency_hz"]))
+                self.click_brightness_var.set(format_float(profile["click_brightness"]))
+                self.click_decay_var.set(format_float(profile["click_decay"]))
+                self.update_click_preset_vars(profile)
+
+        def on_save_click_profile(self):
+                name = self.click_profile_name_var.get().strip()
+
+                if not name:
+                        messagebox.showinfo("Info", "Entre un nom de profil.")
+                        return
+
+                try:
+                        click_params = self.parse_click_params()
+                except Exception as e:
+                        messagebox.showerror("Erreur", str(e))
+                        return
+
+                existing_profile = self.find_click_profile(name)
+
+                if existing_profile is not None:
+                        confirmed = messagebox.askyesno(
+                                "Remplacer le profil",
+                                f"Le profil existe déjà.\n\nRemplacer : {existing_profile['name']} ?"
+                        )
+
+                        if not confirmed:
+                                return
+
+                        existing_profile.update(click_params)
+                        existing_profile["name"] = name
+                else:
+                        self.click_profiles.append({
+                                "name": name,
+                                **click_params,
+                        })
+
+                self.click_profiles.sort(key=lambda profile: profile["name"].lower())
+                save_click_profiles(self.click_profiles)
+                self.click_profile_var.set(name)
+                self.refresh_click_profile_menu()
+                self.status_var.set(f"Profil de bip sauvegardé : {name}")
+
+        def on_load_click_profile(self):
+                profile = self.find_click_profile(self.click_profile_var.get())
+
+                if profile is None:
+                        messagebox.showinfo("Info", "Sélectionne un profil de bip.")
+                        return
+
+                self.apply_click_profile(profile)
+                self.click_profile_name_var.set(profile["name"])
+                self.status_var.set(f"Profil de bip chargé : {profile['name']}")
+
+        def on_delete_click_profile(self):
+                profile = self.find_click_profile(self.click_profile_var.get())
+
+                if profile is None:
+                        messagebox.showinfo("Info", "Sélectionne un profil de bip.")
+                        return
+
+                confirmed = messagebox.askyesno(
+                        "Confirmer la suppression",
+                        f"Supprimer ce profil de bip ?\n\n{profile['name']}"
+                )
+
+                if not confirmed:
+                        return
+
+                deleted_name = profile["name"]
+                self.click_profiles.remove(profile)
+                save_click_profiles(self.click_profiles)
+                self.click_profile_name_var.set("")
+                self.refresh_click_profile_menu()
+                self.status_var.set(f"Profil de bip supprimé : {deleted_name}")
 
         def on_delete_key(self, event=None):
                 if isinstance(self.focus_get(), tk.Entry):
