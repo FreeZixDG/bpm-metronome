@@ -1,450 +1,31 @@
-import ast
-import json
-import math
-import os
-import subprocess
-import sys
 import tempfile
 import threading
 import time
 import tkinter as tk
-import wave
-from array import array
 from pathlib import Path
 from tkinter import messagebox
 
-SAMPLE_RATE = 48_000
-DEFAULT_CLICK_DURATION_S = 0.035
-DEFAULT_CLICK_FREQUENCY_HZ = 1800
-DEFAULT_CLICK_BRIGHTNESS = 0.35
-DEFAULT_CLICK_DECAY = 140
-CLICK_GAIN = 0.65
-CLICK_MAIN_LEVEL = 0.85
-CLICK_SETTING_PRESETS = {
-        "duration": [
-                ("Court", 0.02),
-                ("Moyen", DEFAULT_CLICK_DURATION_S),
-                ("Long", 0.08),
-        ],
-        "frequency": [
-                ("Grave", 1200),
-                ("Moyen", DEFAULT_CLICK_FREQUENCY_HZ),
-                ("Aigu", 2600),
-        ],
-        "brightness": [
-                ("Faible", 0.1),
-                ("Moyenne", DEFAULT_CLICK_BRIGHTNESS),
-                ("Forte", 0.6),
-        ],
-        "decay": [
-                ("Long", 60),
-                ("Moyen", DEFAULT_CLICK_DECAY),
-                ("Court", 220),
-        ],
-}
-DEFAULT_CLICK_PROFILES = [
-        {
-                "name": "default",
-                "click_duration_s": DEFAULT_CLICK_DURATION_S,
-                "click_frequency_hz": float(DEFAULT_CLICK_FREQUENCY_HZ),
-                "click_brightness": DEFAULT_CLICK_BRIGHTNESS,
-                "click_decay": float(DEFAULT_CLICK_DECAY),
-        }
-]
+from features.audio.usecase import generate_click_preview_wav
+from features.click_profiles.core import find_profile
+from features.click_profiles.repository import load_click_profiles, save_click_profiles
+from features.metronomes.core import parse_click_params, parse_metronome_params
+from features.metronomes.repository import load_entries_from_files, save_db
+from features.metronomes.usecase import find_cached_entry, generate_metronome
+from features.shared.constants import (
+        CLICK_SETTING_PRESETS,
+        DEFAULT_CLICK_BRIGHTNESS,
+        DEFAULT_CLICK_DECAY,
+        DEFAULT_CLICK_DURATION_S,
+        DEFAULT_CLICK_FREQUENCY_HZ,
+)
+from features.shared.paths import OUT_DIR
+from features.shared.utils import (
+        format_float,
+        open_file,
+        parse_float_expression,
+        sanitize_filename,
+)
 
-APP_NAME = "BPM Metronome"
-LEGACY_APP_NAMES = ["BNM Metronome"]
-
-
-def get_platform_app_data_dir(app_name):
-        if sys.platform.startswith("win"):
-                appdata = os.getenv("APPDATA")
-
-                if appdata:
-                        return Path(appdata) / app_name
-
-        return Path.home() / f".{app_name.lower().replace(' ', '-')}"
-
-
-def get_app_data_dir():
-        app_data_dir = get_platform_app_data_dir(APP_NAME)
-
-        for legacy_app_name in LEGACY_APP_NAMES:
-                legacy_app_data_dir = get_platform_app_data_dir(legacy_app_name)
-
-                if legacy_app_data_dir.exists() and not app_data_dir.exists():
-                        try:
-                                legacy_app_data_dir.rename(app_data_dir)
-                        except Exception:
-                                pass
-
-                        break
-
-        return app_data_dir
-
-
-BASE_DIR = Path(__file__).resolve().parent
-APP_DATA_DIR = get_app_data_dir()
-OUT_DIR = APP_DATA_DIR / "metros"
-DB_FILE = OUT_DIR / "index.json"
-CLICK_PROFILES_FILE = APP_DATA_DIR / "click_profiles.json"
-
-
-# =========================
-# UTILS
-# =========================
-
-def format_float(x, max_decimals=6):
-        s = f"{x:.{max_decimals}f}"
-        return s.rstrip("0").rstrip(".")
-
-
-def parse_float_expression(text):
-        text = text.replace(",", ".").strip()
-
-        if not text:
-                raise ValueError("La valeur est vide.")
-
-        try:
-                tree = ast.parse(text, mode="eval")
-        except SyntaxError:
-                raise ValueError("Expression numérique invalide.")
-
-        def eval_node(node):
-                if isinstance(node, ast.Expression):
-                        return eval_node(node.body)
-
-                if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-                        return float(node.value)
-
-                if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-                        value = eval_node(node.operand)
-                        return value if isinstance(node.op, ast.UAdd) else -value
-
-                if isinstance(node, ast.BinOp):
-                        left = eval_node(node.left)
-                        right = eval_node(node.right)
-
-                        if isinstance(node.op, ast.Add):
-                                return left + right
-                        if isinstance(node.op, ast.Sub):
-                                return left - right
-                        if isinstance(node.op, ast.Mult):
-                                return left * right
-                        if isinstance(node.op, ast.Div):
-                                return left / right
-
-                raise ValueError("Seuls les nombres et les opérations +, -, *, / sont acceptés.")
-
-        try:
-                value = eval_node(tree)
-        except ZeroDivisionError:
-                raise ValueError("Division par zéro.")
-
-        if not math.isfinite(value):
-                raise ValueError("Le résultat doit être un nombre fini.")
-
-        return value
-
-
-def sanitize_filename(name):
-        invalid = '<>:"/\\|?*'
-        for c in invalid:
-                name = name.replace(c, "_")
-
-        name = name.strip()
-
-        if not name:
-                name = "metronome.wav"
-
-        if not name.lower().endswith(".wav"):
-                name += ".wav"
-
-        return name
-
-
-def default_filename_from_bpm(bpm):
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        n = 1
-        while True:
-                filename = f"bpm-{n:03d}.wav"
-                if not (OUT_DIR / filename).exists():
-                        return filename
-                n += 1
-
-
-def load_db():
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        if not DB_FILE.exists():
-                return []
-
-        try:
-                with DB_FILE.open("r", encoding="utf-8") as f:
-                        data = json.load(f)
-
-                if isinstance(data, list):
-                        return data
-
-                return []
-        except Exception:
-                return []
-
-
-def save_db(entries):
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        with DB_FILE.open("w", encoding="utf-8") as f:
-                json.dump(entries, f, indent=2, ensure_ascii=False)
-
-
-def load_entries_from_files():
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        db_entries = load_db()
-        entries_by_filename = {
-                entry.get("filename"): entry
-                for entry in db_entries
-                if isinstance(entry, dict) and entry.get("filename")
-        }
-
-        entries = []
-
-        for path in sorted(OUT_DIR.iterdir(), key=lambda p: p.name.lower()):
-                if not path.is_file() or path.suffix.lower() != ".wav":
-                        continue
-
-                entry = dict(entries_by_filename.get(path.name, {}))
-                entry["filename"] = path.name
-                entry.setdefault("created_at", path.stat().st_mtime)
-                entries.append(entry)
-
-        return entries
-
-
-def unique_path(filename):
-        filename = sanitize_filename(filename)
-        path = OUT_DIR / filename
-
-        if not path.exists():
-                return path
-
-        stem = path.stem
-        suffix = path.suffix
-
-        n = 2
-        while True:
-                candidate = OUT_DIR / f"{stem}_{n}{suffix}"
-                if not candidate.exists():
-                        return candidate
-                n += 1
-
-
-def open_file(path):
-        path = Path(path)
-
-        if sys.platform.startswith("win"):
-                os.startfile(str(path))
-        elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(path)])
-        else:
-                subprocess.Popen(["xdg-open", str(path)])
-
-
-def load_click_profiles():
-        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-        if not CLICK_PROFILES_FILE.exists():
-                save_click_profiles(DEFAULT_CLICK_PROFILES)
-                return [dict(profile) for profile in DEFAULT_CLICK_PROFILES]
-
-        try:
-                with CLICK_PROFILES_FILE.open("r", encoding="utf-8") as f:
-                        data = json.load(f)
-        except Exception:
-                return []
-
-        if not isinstance(data, list):
-                return []
-
-        profiles = []
-
-        for profile in data:
-                if not isinstance(profile, dict):
-                        continue
-
-                name = str(profile.get("name", "")).strip()
-
-                if not name:
-                        continue
-
-                try:
-                        click_duration_s = float(profile["click_duration_s"])
-                        click_frequency_hz = float(profile["click_frequency_hz"])
-                        click_brightness = float(profile["click_brightness"])
-                        click_decay = float(profile["click_decay"])
-                except (KeyError, TypeError, ValueError):
-                        continue
-
-                profiles.append({
-                        "name": name,
-                        "click_duration_s": click_duration_s,
-                        "click_frequency_hz": click_frequency_hz,
-                        "click_brightness": click_brightness,
-                        "click_decay": click_decay,
-                })
-
-        default_profile_exists = any(profile["name"].strip().lower() == "default" for profile in profiles)
-
-        if not default_profile_exists:
-                profiles = [dict(profile) for profile in DEFAULT_CLICK_PROFILES] + profiles
-                save_click_profiles(profiles)
-
-        return profiles
-
-
-def save_click_profiles(profiles):
-        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-        with CLICK_PROFILES_FILE.open("w", encoding="utf-8") as f:
-                json.dump(profiles, f, indent=2, ensure_ascii=False)
-
-
-# =========================
-# AUDIO
-# =========================
-
-def make_click(duration_s, frequency_hz, brightness, decay):
-        """
-        Crée le clic avec les réglages demandés.
-        Ensuite, on le recopie dans le WAV aux bons endroits.
-        """
-        click_samples = int(duration_s * SAMPLE_RATE)
-        click = []
-
-        for n in range(click_samples):
-                t = n / SAMPLE_RATE
-
-                envelope = math.exp(-t * decay)
-
-                value = envelope * (
-                            CLICK_MAIN_LEVEL * math.sin(2 * math.pi * frequency_hz * t)
-                            + brightness * math.sin(2 * math.pi * frequency_hz * 2 * t)
-                )
-
-                # Gain volontairement inférieur à 1 pour éviter le clipping
-                value *= CLICK_GAIN
-
-                sample = int(max(-1.0, min(1.0, value)) * 32767)
-                click.append(sample)
-
-        return click
-
-
-def generate_wav(path, duration_s, samples_between, click_params):
-        """
-        Génère un WAV en streaming, sans créer un énorme tableau audio complet en RAM.
-        """
-        total_samples = int(duration_s * SAMPLE_RATE)
-        click = make_click(
-                duration_s=click_params["click_duration_s"],
-                frequency_hz=click_params["click_frequency_hz"],
-                brightness=click_params["click_brightness"],
-                decay=click_params["click_decay"],
-        )
-        click_len = len(click)
-
-        chunk_size = SAMPLE_RATE  # 1 seconde par chunk
-
-        with wave.open(str(path), "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(SAMPLE_RATE)
-
-                for chunk_start in range(0, total_samples, chunk_size):
-                        chunk_len = min(chunk_size, total_samples - chunk_start)
-                        chunk_end = chunk_start + chunk_len
-
-                        chunk = [0] * chunk_len
-
-                        # Premier clic qui peut toucher ce chunk
-                        first_click_index = max(0, (chunk_start - click_len) // samples_between)
-                        click_pos = first_click_index * samples_between
-
-                        while click_pos < chunk_end:
-                                overlap_start = max(chunk_start, click_pos)
-                                overlap_end = min(chunk_end, click_pos + click_len)
-
-                                if overlap_start < overlap_end:
-                                        chunk_i = overlap_start - chunk_start
-                                        click_i = overlap_start - click_pos
-                                        length = overlap_end - overlap_start
-
-                                        for j in range(length):
-                                                v = chunk[chunk_i + j] + click[click_i + j]
-
-                                                if v > 32767:
-                                                        v = 32767
-                                                elif v < -32768:
-                                                        v = -32768
-
-                                                chunk[chunk_i + j] = v
-
-                                click_pos += samples_between
-
-                        pcm = array("h", chunk)
-
-                        if sys.byteorder != "little":
-                                pcm.byteswap()
-
-                        wav.writeframes(pcm.tobytes())
-
-
-def generate_click_preview_wav(path, click_params):
-        click = make_click(
-                duration_s=click_params["click_duration_s"],
-                frequency_hz=click_params["click_frequency_hz"],
-                brightness=click_params["click_brightness"],
-                decay=click_params["click_decay"],
-        )
-
-        total_samples = int(1.5 * SAMPLE_RATE)
-        samples_between = int(0.5 * SAMPLE_RATE)
-        click_len = len(click)
-        audio = [0] * total_samples
-
-        for click_pos in range(0, total_samples, samples_between):
-                for i, sample in enumerate(click):
-                        audio_i = click_pos + i
-
-                        if audio_i >= total_samples:
-                                break
-
-                        v = audio[audio_i] + sample
-
-                        if v > 32767:
-                                v = 32767
-                        elif v < -32768:
-                                v = -32768
-
-                        audio[audio_i] = v
-
-        pcm = array("h", audio)
-
-        if sys.byteorder != "little":
-                pcm.byteswap()
-
-        with wave.open(str(path), "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(SAMPLE_RATE)
-                wav.writeframes(pcm.tobytes())
-
-
-# =========================
-# GUI
-# =========================
 
 class MetronomeGUI(tk.Tk):
         def __init__(self):
@@ -639,13 +220,7 @@ class MetronomeGUI(tk.Tk):
                 )
 
         def find_click_profile(self, name):
-                normalized_name = name.strip().lower()
-
-                for profile in self.click_profiles:
-                        if profile["name"].strip().lower() == normalized_name:
-                                return profile
-
-                return None
+                return find_profile(self.click_profiles, name)
 
         def on_click_profile_selected(self, name):
                 self.click_profile_var.set(name)
@@ -805,81 +380,22 @@ class MetronomeGUI(tk.Tk):
                 self.status_var.set(f"Valeur convertie en {unit}.")
 
         def parse_click_params(self):
-                click_duration_s = parse_float_expression(self.click_duration_var.get())
-                click_frequency_hz = parse_float_expression(self.click_frequency_var.get())
-                click_brightness = parse_float_expression(self.click_brightness_var.get())
-                click_decay = parse_float_expression(self.click_decay_var.get())
-
-                if click_duration_s <= 0:
-                        raise ValueError("La durée du bip doit être positive.")
-
-                if click_frequency_hz <= 0:
-                        raise ValueError("La fréquence du bip doit être positive.")
-
-                max_click_frequency_hz = SAMPLE_RATE / 4
-
-                if click_frequency_hz >= max_click_frequency_hz:
-                        raise ValueError(
-                                f"La fréquence du bip doit être inférieure à {format_float(max_click_frequency_hz)} Hz."
-                        )
-
-                if click_brightness < 0:
-                        raise ValueError("La brillance doit être positive ou nulle.")
-
-                if click_decay <= 0:
-                        raise ValueError("Le decay doit être positif.")
-
-                return {
-                        "click_duration_s": click_duration_s,
-                        "click_frequency_hz": click_frequency_hz,
-                        "click_brightness": click_brightness,
-                        "click_decay": click_decay,
-                }
+                return parse_click_params(
+                        self.click_duration_var.get(),
+                        self.click_frequency_var.get(),
+                        self.click_brightness_var.get(),
+                        self.click_decay_var.get(),
+                )
 
         def parse_params(self):
-                raw_value = self.value_var.get()
-                raw_duration = self.duration_var.get()
-
-                value = parse_float_expression(raw_value)
-                duration_min = parse_float_expression(raw_duration)
                 click_params = self.parse_click_params()
 
-                if value <= 0:
-                        raise ValueError("La valeur doit être positive.")
-
-                if duration_min <= 0:
-                        raise ValueError("La durée doit être positive.")
-
-                duration_s = duration_min * 60
-
-                mode = self.mode_var.get()
-
-                if mode == "bpm":
-                        requested_bpm = value
-                        requested_interval_s = 60 / requested_bpm
-                else:
-                        requested_interval_s = value
-                        requested_bpm = 60 / requested_interval_s
-
-                samples_between = round(requested_interval_s * SAMPLE_RATE)
-
-                if samples_between <= 0:
-                        raise ValueError("Intervalle trop court.")
-
-                # Timing réellement représenté dans le WAV
-                actual_interval_s = samples_between / SAMPLE_RATE
-                actual_bpm = 60 / actual_interval_s
-
-                return {
-                        "mode": mode,
-                        "requested_bpm": requested_bpm,
-                        "requested_interval_s": requested_interval_s,
-                        "actual_bpm": actual_bpm,
-                        "actual_interval_s": actual_interval_s,
-                        "samples_between": samples_between,
-                        "duration_s": duration_s,
-                        **click_params,
-                }
+                return parse_metronome_params(
+                        self.mode_var.get(),
+                        self.value_var.get(),
+                        self.duration_var.get(),
+                        click_params,
+                )
 
         def on_preview_click(self):
                 try:
@@ -889,7 +405,7 @@ class MetronomeGUI(tk.Tk):
                         return
 
                 path = Path(tempfile.gettempdir()) / f"bpm-metronome-preview-{int(time.time() * 1000)}.wav"
-                print(path)
+
                 try:
                         generate_click_preview_wav(path, click_params)
                         open_file(path)
@@ -900,32 +416,6 @@ class MetronomeGUI(tk.Tk):
 
                 self.status_var.set("Prévisualisation temporaire lancée. Clique sur Sauvegarder WAV pour garder ce son.")
 
-        def find_cached_entry(self, params):
-                for entry in self.entries:
-                        entry_click_duration_s = entry.get("click_duration_s", DEFAULT_CLICK_DURATION_S)
-                        entry_click_frequency_hz = entry.get("click_frequency_hz", DEFAULT_CLICK_FREQUENCY_HZ)
-                        entry_click_brightness = entry.get("click_brightness", DEFAULT_CLICK_BRIGHTNESS)
-                        entry_click_decay = entry.get("click_decay", DEFAULT_CLICK_DECAY)
-
-                        same_click = (
-                                    abs(entry_click_duration_s - params["click_duration_s"]) < 1e-9
-                                    and abs(entry_click_frequency_hz - params["click_frequency_hz"]) < 1e-9
-                                    and abs(entry_click_brightness - params["click_brightness"]) < 1e-9
-                                    and abs(entry_click_decay - params["click_decay"]) < 1e-9
-                        )
-                        same_timing = (
-                                    entry.get("sample_rate") == SAMPLE_RATE
-                                    and entry.get("samples_between") == params["samples_between"]
-                                    and abs(entry.get("duration_s", 0) - params["duration_s"]) < 1e-9
-                        )
-
-                        path = OUT_DIR / entry.get("filename", "")
-
-                        if same_timing and same_click and path.exists():
-                                return entry
-
-                return None
-
         def on_generate(self):
                 try:
                         params = self.parse_params()
@@ -933,53 +423,27 @@ class MetronomeGUI(tk.Tk):
                         messagebox.showerror("Erreur", str(e))
                         return
 
-                cached = self.find_cached_entry(params)
+                cached = find_cached_entry(self.entries, params)
 
                 if cached is not None:
                         self.status_var.set(f"Déjà généré : {cached['filename']}")
                         self.select_entry(cached)
                         return
 
-                filename = default_filename_from_bpm(params["requested_bpm"])
-                path = unique_path(filename)
-
                 self.generate_button.config(state="disabled")
                 self.status_var.set("Génération en cours...")
 
                 thread = threading.Thread(
                         target=self.generate_worker,
-                        args=(path, params),
+                        args=(params,),
                         daemon=True
                 )
                 thread.start()
 
-        def generate_worker(self, path, params):
+        def generate_worker(self, params):
                 try:
-                        generate_wav(
-                                path=path,
-                                duration_s=params["duration_s"],
-                                samples_between=params["samples_between"],
-                                click_params=params,
-                        )
-
-                        entry = {
-                                "filename": path.name,
-                                "sample_rate": SAMPLE_RATE,
-                                "duration_s": params["duration_s"],
-                                "requested_bpm": params["requested_bpm"],
-                                "requested_interval_s": params["requested_interval_s"],
-                                "actual_bpm": params["actual_bpm"],
-                                "actual_interval_s": params["actual_interval_s"],
-                                "samples_between": params["samples_between"],
-                                "click_duration_s": params["click_duration_s"],
-                                "click_frequency_hz": params["click_frequency_hz"],
-                                "click_brightness": params["click_brightness"],
-                                "click_decay": params["click_decay"],
-                                "created_at": time.time(),
-                        }
-
+                        entry = generate_metronome(params)
                         self.after(0, lambda: self.on_generate_done(entry))
-
                 except Exception as e:
                         self.after(0, lambda err=e: self.on_generate_error(err))
 
@@ -1161,8 +625,3 @@ class MetronomeGUI(tk.Tk):
         def on_open_folder(self):
                 OUT_DIR.mkdir(exist_ok=True)
                 open_file(OUT_DIR)
-
-
-if __name__ == "__main__":
-        app = MetronomeGUI()
-        app.mainloop()

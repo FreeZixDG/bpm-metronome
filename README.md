@@ -20,7 +20,7 @@ It is useful when you need an exact BPM or interval-based click track, with a cu
 1. Run the app:
 
    ```powershell
-   python main.py
+   python src/main.py
    ```
 
 2. Choose the mode:
@@ -36,4 +36,30 @@ It is useful when you need an exact BPM or interval-based click track, with a cu
 6. Click `Sauvegarder WAV` to generate the metronome file.
 
 Generated files are stored in the app data folder and can be managed directly from the interface.
+
+## Project structure
+
+The code lives in `src/`, organized by feature:
+
+```text
+src/
+├── main.py                     # entry point, starts the GUI
+└── features/
+    ├── shared/                 # cross-cutting code
+    │   ├── constants.py        # audio + click defaults, presets, app name
+    │   ├── paths.py            # app data directories
+    │   └── utils.py            # number parsing, filenames, file opening
+    ├── audio/
+    │   ├── core.py             # click synthesis (pure domain)
+    │   └── usecase.py          # writing WAV files
+    ├── click_profiles/
+    │   ├── core.py             # profile validation
+    │   └── repository.py       # loading/saving profiles
+    ├── metronomes/
+    │   ├── core.py             # input validation + timing computation
+    │   ├── repository.py       # generated files + index.json access
+    │   └── usecase.py          # generate metronome, cache lookup
+    └── gui/
+        └── app.py              # tkinter interface (view + controller)
+```
 
