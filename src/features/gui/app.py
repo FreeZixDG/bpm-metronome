@@ -12,6 +12,7 @@ from features.metronomes.core import parse_click_params, parse_metronome_params
 from features.metronomes.repository import load_entries_from_files, save_db
 from features.metronomes.usecase import find_cached_entry, generate_metronome
 from features.shared.constants import (
+        APP_VERSION,
         BEAT_CHOICES,
         CLICK_SETTING_PRESETS,
         DEFAULT_BEATS,
@@ -51,7 +52,8 @@ class MetronomeGUI(tk.Tk):
                 super().__init__()
 
                 self.title("BPM Metronome")
-                self.geometry("1200x820")
+                self.geometry("1024x900")
+                self.minsize(1024, 900)
 
                 self.style = ttk.Style(self)
 
@@ -174,8 +176,12 @@ class MetronomeGUI(tk.Tk):
                                                                                                     padx=4)
                 tk.Button(action_frame, text="Supprimer", command=self.on_delete).grid(row=0, column=6, padx=4)
 
+                status_bar = tk.Frame(main)
+                status_bar.pack(fill="x", pady=(10, 0))
+
                 self.status_var = tk.StringVar(value="Prêt.")
-                tk.Label(main, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(10, 0))
+                tk.Label(status_bar, textvariable=self.status_var, anchor="w").pack(side="left")
+                tk.Label(status_bar, text=f"v{APP_VERSION}", anchor="e", fg="#888888").pack(side="right")
 
         def build_beep_editor(self, parent, which, title):
                 frame = tk.LabelFrame(parent, text=title)

@@ -70,4 +70,5 @@ DEFAULT_CLICK_PROFILES = [
 ]
 
 APP_NAME = "BPM Metronome"
+APP_VERSION = "1.0.0"
 LEGACY_APP_NAMES = ["BNM Metronome"]
