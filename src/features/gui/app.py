@@ -3,7 +3,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 from features.audio.usecase import generate_click_preview_wav, generate_measure_preview_wav
 from features.click_profiles.core import find_profile
@@ -23,14 +23,16 @@ from features.shared.constants import (
 from features.shared.paths import OUT_DIR
 from features.shared.utils import format_float, open_file, parse_float_expression, sanitize_filename
 
-# (clé de preset, libellé affiché, clé dans la config du bip)
+# (clé de preset, libellé affiché, clé dans la config du bip, min slider, max slider)
 BEEP_SETTINGS = [
-        ("duration", "Durée (s) :", "click_duration_s"),
-        ("frequency", "Fréquence (Hz) :", "click_frequency_hz"),
-        ("brightness", "Brillance :", "click_brightness"),
-        ("decay", "Decay :", "click_decay"),
-        ("level", "Volume :", "click_level"),
+        ("duration", "Durée (s) :", "click_duration_s", 0.005, 0.15),
+        ("frequency", "Fréquence (Hz) :", "click_frequency_hz", 200, 5000),
+        ("brightness", "Brillance :", "click_brightness", 0.0, 1.0),
+        ("decay", "Decay :", "click_decay", 20, 400),
+        ("level", "Volume :", "click_level", 0.0, 1.0),
 ]
+
+BEEP_RANGES = {key: (vmin, vmax) for key, _, _, vmin, vmax in BEEP_SETTINGS}
 
 BEEP_TYPES = [
         ("strong", "Bip fort", DEFAULT_STRONG_BEEP),
@@ -51,6 +53,8 @@ class MetronomeGUI(tk.Tk):
                 self.title("BPM Metronome")
                 self.geometry("1200x820")
 
+                self.style = ttk.Style(self)
+
                 self.entries = load_entries_from_files()
 
                 self.mode_var = tk.StringVar(value="interval")
@@ -58,16 +62,20 @@ class MetronomeGUI(tk.Tk):
                 self.value_var = tk.StringVar(value="1.45")
                 self.duration_var = tk.StringVar(value="5")
 
+                self._syncing = False
                 self.beep_vars = {}
                 self.beep_preset_vars = {}
+                self.beep_scale_vars = {}
 
                 for which, _, defaults in BEEP_TYPES:
                         self.beep_vars[which] = {}
                         self.beep_preset_vars[which] = {}
+                        self.beep_scale_vars[which] = {}
 
-                        for setting_key, _, config_key in BEEP_SETTINGS:
-                                value = defaults[config_key]
+                        for setting_key, _, config_key, _, _ in BEEP_SETTINGS:
+                                value = float(defaults[config_key])
                                 self.beep_vars[which][setting_key] = tk.StringVar(value=format_float(value))
+                                self.beep_scale_vars[which][setting_key] = tk.DoubleVar(value=value)
                                 self.beep_preset_vars[which][setting_key] = tk.StringVar(
                                         value=self.get_preset_label_for_value(setting_key, value)
                                 )
@@ -171,20 +179,16 @@ class MetronomeGUI(tk.Tk):
 
         def build_beep_editor(self, parent, which, title):
                 frame = tk.LabelFrame(parent, text=title)
+                frame.grid_columnconfigure(1, weight=1)
 
-                for row, (setting_key, label, _) in enumerate(BEEP_SETTINGS):
-                        self.build_click_setting_row(
-                                frame, row, label,
-                                self.beep_vars[which][setting_key],
-                                self.beep_preset_vars[which][setting_key],
-                                setting_key
-                        )
+                for row, (setting_key, label, _, vmin, vmax) in enumerate(BEEP_SETTINGS):
+                        self.build_click_setting_row(frame, row, which, setting_key, label, vmin, vmax)
 
-                tk.Button(
+                ttk.Button(
                         frame,
                         text="Prévisualiser bip",
                         command=lambda w=which: self.on_preview_beep(w)
-                ).grid(row=len(BEEP_SETTINGS), column=0, columnspan=2, sticky="w", padx=8, pady=(8, 8))
+                ).grid(row=len(BEEP_SETTINGS), column=0, columnspan=3, sticky="w", padx=8, pady=(8, 8))
 
                 return frame
 
@@ -247,21 +251,91 @@ class MetronomeGUI(tk.Tk):
 
                 self.refresh_click_profile_menu()
 
-        def build_click_setting_row(self, parent, row, label, value_var, preset_var, preset_key):
-                tk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=4)
-                tk.Entry(parent, textvariable=value_var, width=10).grid(row=row, column=1, padx=8, pady=4)
+        def build_click_setting_row(self, parent, row, which, setting_key, label, vmin, vmax):
+                value_var = self.beep_vars[which][setting_key]
+                preset_var = self.beep_preset_vars[which][setting_key]
+                scale_var = self.beep_scale_vars[which][setting_key]
 
-                for i, (preset_label, preset_value) in enumerate(CLICK_SETTING_PRESETS[preset_key]):
-                        tk.Radiobutton(
-                                parent,
+                ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=4)
+
+                scale = ttk.Scale(
+                        parent,
+                        from_=vmin,
+                        to=vmax,
+                        orient="horizontal",
+                        variable=scale_var,
+                        command=lambda v, w=which, k=setting_key: self.on_scale_change(w, k, v)
+                )
+                scale.grid(row=row, column=1, sticky="ew", padx=8, pady=4)
+
+                entry = ttk.Entry(parent, textvariable=value_var, width=8)
+                entry.grid(row=row, column=2, padx=(0, 8), pady=4)
+                entry.bind("<Return>", lambda e, w=which, k=setting_key: self.on_value_commit(w, k))
+                entry.bind("<FocusOut>", lambda e, w=which, k=setting_key: self.on_value_commit(w, k))
+
+                presets = ttk.Frame(parent)
+                presets.grid(row=row, column=3, sticky="w", padx=4, pady=4)
+
+                for preset_label, preset_value in CLICK_SETTING_PRESETS[setting_key]:
+                        ttk.Radiobutton(
+                                presets,
                                 text=f"{preset_label} ({format_float(preset_value)})",
                                 variable=preset_var,
                                 value=preset_label,
-                                command=lambda v=value_var, p=preset_value: self.apply_click_setting_preset(v, p)
-                        ).grid(row=row, column=2 + i, sticky="w", padx=4, pady=4)
+                                style="Toolbutton",
+                                command=lambda w=which, k=setting_key, p=preset_value:
+                                        self.apply_click_setting_preset(w, k, p)
+                        ).pack(side="left", padx=1)
 
-        def apply_click_setting_preset(self, value_var, preset_value):
-                value_var.set(format_float(preset_value))
+        def _set_beep_value(self, which, setting_key, value):
+                """Met à jour ensemble le slider, le champ texte et le preset actif."""
+                self._syncing = True
+
+                try:
+                        self.beep_scale_vars[which][setting_key].set(float(value))
+                        self.beep_vars[which][setting_key].set(format_float(value))
+                        self.beep_preset_vars[which][setting_key].set(
+                                self.get_preset_label_for_value(setting_key, value)
+                        )
+                finally:
+                        self._syncing = False
+
+        def on_scale_change(self, which, setting_key, raw_value):
+                if self._syncing:
+                        return
+
+                try:
+                        value = float(raw_value)
+                except (TypeError, ValueError):
+                        return
+
+                self._syncing = True
+
+                try:
+                        self.beep_vars[which][setting_key].set(format_float(value))
+                        self.beep_preset_vars[which][setting_key].set(
+                                self.get_preset_label_for_value(setting_key, value)
+                        )
+                finally:
+                        self._syncing = False
+
+        def on_value_commit(self, which, setting_key):
+                if self._syncing:
+                        return
+
+                text = self.beep_vars[which][setting_key].get()
+
+                try:
+                        value = parse_float_expression(text)
+                except ValueError:
+                        return
+
+                vmin, vmax = BEEP_RANGES[setting_key]
+                clamped = max(vmin, min(vmax, value))
+                self._set_beep_value(which, setting_key, clamped)
+
+        def apply_click_setting_preset(self, which, setting_key, preset_value):
+                self._set_beep_value(which, setting_key, preset_value)
                 self.status_var.set("Preset du bip appliqué.")
 
         def get_preset_label_for_value(self, preset_key, value):
@@ -270,12 +344,6 @@ class MetronomeGUI(tk.Tk):
                                 return preset_label
 
                 return ""
-
-        def update_beep_preset_vars(self, which, beep):
-                for setting_key, _, config_key in BEEP_SETTINGS:
-                        self.beep_preset_vars[which][setting_key].set(
-                                self.get_preset_label_for_value(setting_key, beep[config_key])
-                        )
 
         def collect_beep(self, which):
                 variables = self.beep_vars[which]
@@ -382,10 +450,8 @@ class MetronomeGUI(tk.Tk):
                 for which, _, _ in BEEP_TYPES:
                         beep = profile[which]
 
-                        for setting_key, _, config_key in BEEP_SETTINGS:
-                                self.beep_vars[which][setting_key].set(format_float(beep[config_key]))
-
-                        self.update_beep_preset_vars(which, beep)
+                        for setting_key, _, config_key, _, _ in BEEP_SETTINGS:
+                                self._set_beep_value(which, setting_key, beep[config_key])
 
                 self.beats_var.set(str(profile["beats"]))
                 self.pattern = list(profile["pattern"])
