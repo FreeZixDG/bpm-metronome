@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+from features.shared.config import DEBUG, DEBUG_DATA_DIR
 from features.shared.constants import APP_NAME, LEGACY_APP_NAMES
 
 
@@ -32,7 +33,7 @@ def get_app_data_dir():
         return app_data_dir
 
 
-APP_DATA_DIR = get_app_data_dir()
+APP_DATA_DIR = DEBUG_DATA_DIR if DEBUG else get_app_data_dir()
 OUT_DIR = APP_DATA_DIR / "metros"
 DB_FILE = OUT_DIR / "index.json"
 CLICK_PROFILES_FILE = APP_DATA_DIR / "click_profiles.json"
