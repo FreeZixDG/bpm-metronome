@@ -52,8 +52,8 @@ class MetronomeGUI(tk.Tk):
                 super().__init__()
 
                 self.title("BPM Metronome")
-                self.geometry("1280x720")
-                self.minsize(1280, 720)
+                self.geometry("1280x900")
+                self.minsize(1280, 900)
 
                 self.style = ttk.Style(self)
 
