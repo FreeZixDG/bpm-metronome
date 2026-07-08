@@ -33,16 +33,23 @@ function Get-AppIconFile {
         return $null
     }
 
-    $IconCandidates = Get-ChildItem -Path $IconDir -File | Where-Object {
-        $_.Extension -iin @(".ico", ".png", ".jpg", ".jpeg", ".bmp")
-    } | Sort-Object @{ Expression = { if ($_.Extension -ieq ".ico") { 0 } else { 1 } } }, Name
+    $PreferredIcon = Join-Path $IconDir "screenshot.png"
 
-    if (-not $IconCandidates) {
-        Write-Warning "Aucune image trouvee dans icon, l'executable sera cree sans icone personnalisee."
-        return $null
+    if (Test-Path $PreferredIcon) {
+        $SourceIcon = Get-Item $PreferredIcon
     }
+    else {
+        $IconCandidates = Get-ChildItem -Path $IconDir -File | Where-Object {
+            $_.Extension -iin @(".ico", ".png", ".jpg", ".jpeg", ".bmp")
+        } | Sort-Object @{ Expression = { if ($_.Extension -ieq ".ico") { 0 } else { 1 } } }, Name
 
-    $SourceIcon = $IconCandidates[0]
+        if (-not $IconCandidates) {
+            Write-Warning "Aucune image trouvee dans icon, l'executable sera cree sans icone personnalisee."
+            return $null
+        }
+
+        $SourceIcon = $IconCandidates[0]
+    }
 
     if ($SourceIcon.Extension -ieq ".ico") {
         return $SourceIcon.FullName
