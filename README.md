@@ -4,7 +4,7 @@ A small vibe-coded desktop tool for generating very precise metronome WAV files.
 
 It is useful when you need an exact BPM or interval-based click track, with a custom beep sound that can be tuned and saved as reusable profiles.
 
-![BPM Metronome screenshot](icon/screenshot.png)
+![Capture d'écran 2026-07-08 204718.png](icon/Capture%20d%27%C3%A9cran%202026-07-08%20204718.png)
 
 ## Features
 
