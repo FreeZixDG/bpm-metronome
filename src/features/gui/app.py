@@ -5,26 +5,43 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from features.audio.usecase import generate_click_preview_wav
+from features.audio.usecase import generate_click_preview_wav, generate_measure_preview_wav
 from features.click_profiles.core import find_profile
 from features.click_profiles.repository import load_click_profiles, save_click_profiles
 from features.metronomes.core import parse_click_params, parse_metronome_params
 from features.metronomes.repository import load_entries_from_files, save_db
 from features.metronomes.usecase import find_cached_entry, generate_metronome
 from features.shared.constants import (
+        BEAT_CHOICES,
         CLICK_SETTING_PRESETS,
-        DEFAULT_CLICK_BRIGHTNESS,
-        DEFAULT_CLICK_DECAY,
-        DEFAULT_CLICK_DURATION_S,
-        DEFAULT_CLICK_FREQUENCY_HZ,
+        DEFAULT_BEATS,
+        DEFAULT_PATTERN,
+        DEFAULT_STRONG_BEEP,
+        DEFAULT_WEAK_BEEP,
+        MAX_BEATS,
 )
 from features.shared.paths import OUT_DIR
-from features.shared.utils import (
-        format_float,
-        open_file,
-        parse_float_expression,
-        sanitize_filename,
-)
+from features.shared.utils import format_float, open_file, parse_float_expression, sanitize_filename
+
+# (clé de preset, libellé affiché, clé dans la config du bip)
+BEEP_SETTINGS = [
+        ("duration", "Durée (s) :", "click_duration_s"),
+        ("frequency", "Fréquence (Hz) :", "click_frequency_hz"),
+        ("brightness", "Brillance :", "click_brightness"),
+        ("decay", "Decay :", "click_decay"),
+        ("level", "Volume :", "click_level"),
+]
+
+BEEP_TYPES = [
+        ("strong", "Bip fort", DEFAULT_STRONG_BEEP),
+        ("weak", "Bip faible", DEFAULT_WEAK_BEEP),
+]
+
+CIRCLE_RADIUS = 16
+CIRCLE_GAP = 16
+CIRCLE_MARGIN = 14
+CIRCLE_STRONG_COLOR = "#4a90d9"
+CIRCLE_WEAK_OUTLINE = "#888888"
 
 
 class MetronomeGUI(tk.Tk):
@@ -32,7 +49,7 @@ class MetronomeGUI(tk.Tk):
                 super().__init__()
 
                 self.title("BPM Metronome")
-                self.geometry("1100x700")
+                self.geometry("1200x820")
 
                 self.entries = load_entries_from_files()
 
@@ -40,14 +57,25 @@ class MetronomeGUI(tk.Tk):
                 self.current_mode = self.mode_var.get()
                 self.value_var = tk.StringVar(value="1.45")
                 self.duration_var = tk.StringVar(value="5")
-                self.click_duration_var = tk.StringVar(value=format_float(DEFAULT_CLICK_DURATION_S))
-                self.click_frequency_var = tk.StringVar(value=format_float(DEFAULT_CLICK_FREQUENCY_HZ))
-                self.click_brightness_var = tk.StringVar(value=format_float(DEFAULT_CLICK_BRIGHTNESS))
-                self.click_decay_var = tk.StringVar(value=format_float(DEFAULT_CLICK_DECAY))
-                self.click_duration_preset_var = tk.StringVar(value="Moyen")
-                self.click_frequency_preset_var = tk.StringVar(value="Moyen")
-                self.click_brightness_preset_var = tk.StringVar(value="Moyenne")
-                self.click_decay_preset_var = tk.StringVar(value="Moyen")
+
+                self.beep_vars = {}
+                self.beep_preset_vars = {}
+
+                for which, _, defaults in BEEP_TYPES:
+                        self.beep_vars[which] = {}
+                        self.beep_preset_vars[which] = {}
+
+                        for setting_key, _, config_key in BEEP_SETTINGS:
+                                value = defaults[config_key]
+                                self.beep_vars[which][setting_key] = tk.StringVar(value=format_float(value))
+                                self.beep_preset_vars[which][setting_key] = tk.StringVar(
+                                        value=self.get_preset_label_for_value(setting_key, value)
+                                )
+
+                self.beats_var = tk.StringVar(value=str(DEFAULT_BEATS))
+                self.pattern = list(DEFAULT_PATTERN)
+                self._circle_geometry = []
+
                 self.click_profiles = load_click_profiles()
                 self.click_profile_name_var = tk.StringVar()
                 self.click_profile_var = tk.StringVar(value="Aucun profil")
@@ -59,6 +87,7 @@ class MetronomeGUI(tk.Tk):
                 self.bind("<Delete>", self.on_delete_key)
                 self.protocol("WM_DELETE_WINDOW", self.on_close)
                 self.refresh_list()
+                self.draw_pattern()
 
         def build_ui(self):
                 main = tk.Frame(self)
@@ -99,62 +128,21 @@ class MetronomeGUI(tk.Tk):
                 )
                 self.generate_button.grid(row=0, column=4, padx=20)
 
-                sound_frame = tk.LabelFrame(main, text="Son du bip")
-                sound_frame.pack(fill="x", pady=(0, 10))
+                beeps_frame = tk.Frame(main)
+                beeps_frame.pack(fill="x", pady=(0, 10))
 
-                self.build_click_setting_row(
-                        sound_frame, 0, "Durée du bip (s) :", self.click_duration_var,
-                        self.click_duration_preset_var, "duration"
-                )
-                self.build_click_setting_row(
-                        sound_frame, 1, "Fréquence (Hz) :", self.click_frequency_var,
-                        self.click_frequency_preset_var, "frequency"
-                )
-                self.build_click_setting_row(
-                        sound_frame, 2, "Brillance :", self.click_brightness_var,
-                        self.click_brightness_preset_var, "brightness"
-                )
-                self.build_click_setting_row(
-                        sound_frame, 3, "Decay :", self.click_decay_var,
-                        self.click_decay_preset_var, "decay"
-                )
-                tk.Button(
-                        sound_frame,
-                        text="Prévisualiser bip",
-                        command=self.on_preview_click
-                ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+                for index, (which, title, _) in enumerate(BEEP_TYPES):
+                        editor = self.build_beep_editor(beeps_frame, which, title)
+                        padx = (0, 6) if index == 0 else (6, 0)
+                        editor.pack(side="left", fill="both", expand=True, padx=padx)
 
-                profile_frame = tk.Frame(sound_frame)
-                profile_frame.grid(row=5, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
-
-                tk.Label(profile_frame, text="Profil :").pack(side="left")
-                tk.Entry(profile_frame, textvariable=self.click_profile_name_var, width=22).pack(side="left", padx=8)
-
-                self.click_profile_menu = tk.OptionMenu(profile_frame, self.click_profile_var, "")
-                self.click_profile_menu.config(width=18)
-                self.click_profile_menu.pack(side="left", padx=4)
-
-                tk.Button(
-                        profile_frame,
-                        text="Sauvegarder profil",
-                        command=self.on_save_click_profile
-                ).pack(side="left", padx=4)
-                tk.Button(
-                        profile_frame,
-                        text="Charger profil",
-                        command=self.on_load_click_profile
-                ).pack(side="left", padx=4)
-                tk.Button(
-                        profile_frame,
-                        text="Supprimer profil",
-                        command=self.on_delete_click_profile
-                ).pack(side="left", padx=4)
-                self.refresh_click_profile_menu()
+                self.build_pattern_section(main)
+                self.build_profile_section(main)
 
                 list_frame = tk.LabelFrame(main, text="Métronomes générés")
                 list_frame.pack(fill="both", expand=True, pady=10)
 
-                self.listbox = tk.Listbox(list_frame, height=12, exportselection=False)
+                self.listbox = tk.Listbox(list_frame, height=10, exportselection=False)
                 self.listbox.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
                 self.listbox.bind("<Double-Button-1>", lambda event: self.on_play())
 
@@ -181,6 +169,84 @@ class MetronomeGUI(tk.Tk):
                 self.status_var = tk.StringVar(value="Prêt.")
                 tk.Label(main, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(10, 0))
 
+        def build_beep_editor(self, parent, which, title):
+                frame = tk.LabelFrame(parent, text=title)
+
+                for row, (setting_key, label, _) in enumerate(BEEP_SETTINGS):
+                        self.build_click_setting_row(
+                                frame, row, label,
+                                self.beep_vars[which][setting_key],
+                                self.beep_preset_vars[which][setting_key],
+                                setting_key
+                        )
+
+                tk.Button(
+                        frame,
+                        text="Prévisualiser bip",
+                        command=lambda w=which: self.on_preview_beep(w)
+                ).grid(row=len(BEEP_SETTINGS), column=0, columnspan=2, sticky="w", padx=8, pady=(8, 8))
+
+                return frame
+
+        def build_pattern_section(self, parent):
+                pattern_frame = tk.LabelFrame(parent, text="Temps par battement")
+                pattern_frame.pack(fill="x", pady=(0, 10))
+
+                top = tk.Frame(pattern_frame)
+                top.pack(fill="x", padx=8, pady=(8, 4))
+
+                tk.Label(top, text="Nombre de temps :").pack(side="left")
+
+                beats_menu = tk.OptionMenu(
+                        top,
+                        self.beats_var,
+                        *[str(n) for n in BEAT_CHOICES],
+                        command=self.on_beats_change
+                )
+                beats_menu.config(width=4)
+                beats_menu.pack(side="left", padx=8)
+
+                tk.Label(
+                        top,
+                        text="(clique un rond pour basculer fort / faible)"
+                ).pack(side="left", padx=8)
+
+                tk.Button(
+                        top,
+                        text="Prévisualiser mesure",
+                        command=self.on_preview_measure
+                ).pack(side="right")
+
+                canvas_width = CIRCLE_MARGIN * 2 + MAX_BEATS * (2 * CIRCLE_RADIUS + CIRCLE_GAP)
+                self.pattern_canvas = tk.Canvas(
+                        pattern_frame,
+                        height=2 * CIRCLE_RADIUS + 20,
+                        width=canvas_width,
+                        highlightthickness=0
+                )
+                self.pattern_canvas.pack(anchor="w", padx=8, pady=(0, 8))
+                self.pattern_canvas.bind("<Button-1>", self.on_pattern_click)
+
+        def build_profile_section(self, parent):
+                profile_frame = tk.LabelFrame(parent, text="Profils (bip fort + faible + pattern)")
+                profile_frame.pack(fill="x", pady=(0, 10))
+
+                row = tk.Frame(profile_frame)
+                row.pack(fill="x", padx=8, pady=8)
+
+                tk.Label(row, text="Nom :").pack(side="left")
+                tk.Entry(row, textvariable=self.click_profile_name_var, width=22).pack(side="left", padx=8)
+
+                self.click_profile_menu = tk.OptionMenu(row, self.click_profile_var, "")
+                self.click_profile_menu.config(width=18)
+                self.click_profile_menu.pack(side="left", padx=4)
+
+                tk.Button(row, text="Sauvegarder profil", command=self.on_save_click_profile).pack(side="left", padx=4)
+                tk.Button(row, text="Charger profil", command=self.on_load_click_profile).pack(side="left", padx=4)
+                tk.Button(row, text="Supprimer profil", command=self.on_delete_click_profile).pack(side="left", padx=4)
+
+                self.refresh_click_profile_menu()
+
         def build_click_setting_row(self, parent, row, label, value_var, preset_var, preset_key):
                 tk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=4)
                 tk.Entry(parent, textvariable=value_var, width=10).grid(row=row, column=1, padx=8, pady=4)
@@ -205,19 +271,78 @@ class MetronomeGUI(tk.Tk):
 
                 return ""
 
-        def update_click_preset_vars(self, click_params):
-                self.click_duration_preset_var.set(
-                        self.get_preset_label_for_value("duration", click_params["click_duration_s"])
+        def update_beep_preset_vars(self, which, beep):
+                for setting_key, _, config_key in BEEP_SETTINGS:
+                        self.beep_preset_vars[which][setting_key].set(
+                                self.get_preset_label_for_value(setting_key, beep[config_key])
+                        )
+
+        def collect_beep(self, which):
+                variables = self.beep_vars[which]
+
+                return parse_click_params(
+                        variables["duration"].get(),
+                        variables["frequency"].get(),
+                        variables["brightness"].get(),
+                        variables["decay"].get(),
+                        variables["level"].get(),
                 )
-                self.click_frequency_preset_var.set(
-                        self.get_preset_label_for_value("frequency", click_params["click_frequency_hz"])
-                )
-                self.click_brightness_preset_var.set(
-                        self.get_preset_label_for_value("brightness", click_params["click_brightness"])
-                )
-                self.click_decay_preset_var.set(
-                        self.get_preset_label_for_value("decay", click_params["click_decay"])
-                )
+
+        # ---- Pattern (ronds fort / faible) ----
+
+        def draw_pattern(self):
+                canvas = self.pattern_canvas
+                canvas.delete("all")
+                self._circle_geometry = []
+
+                y = CIRCLE_RADIUS + 10
+
+                for i, is_strong in enumerate(self.pattern):
+                        x = CIRCLE_MARGIN + CIRCLE_RADIUS + i * (2 * CIRCLE_RADIUS + CIRCLE_GAP)
+
+                        fill = CIRCLE_STRONG_COLOR if is_strong else ""
+                        outline = CIRCLE_STRONG_COLOR if is_strong else CIRCLE_WEAK_OUTLINE
+
+                        canvas.create_oval(
+                                x - CIRCLE_RADIUS, y - CIRCLE_RADIUS,
+                                x + CIRCLE_RADIUS, y + CIRCLE_RADIUS,
+                                fill=fill, outline=outline, width=2
+                        )
+                        canvas.create_text(
+                                x, y,
+                                text=str(i + 1),
+                                fill="#ffffff" if is_strong else "#444444"
+                        )
+
+                        self._circle_geometry.append((x, y))
+
+        def on_pattern_click(self, event):
+                for i, (x, y) in enumerate(self._circle_geometry):
+                        if (event.x - x) ** 2 + (event.y - y) ** 2 <= CIRCLE_RADIUS ** 2:
+                                self.pattern[i] = not self.pattern[i]
+                                self.draw_pattern()
+                                self.status_var.set(
+                                        f"Temps {i + 1} : {'fort' if self.pattern[i] else 'faible'}."
+                                )
+                                break
+
+        def on_beats_change(self, value):
+                try:
+                        beats = int(value)
+                except (TypeError, ValueError):
+                        return
+
+                beats = max(1, min(MAX_BEATS, beats))
+
+                if beats > len(self.pattern):
+                        self.pattern += [False] * (beats - len(self.pattern))
+                else:
+                        self.pattern = self.pattern[:beats]
+
+                self.draw_pattern()
+                self.status_var.set(f"{beats} temps par battement.")
+
+        # ---- Profils ----
 
         def find_click_profile(self, name):
                 return find_profile(self.click_profiles, name)
@@ -254,11 +379,25 @@ class MetronomeGUI(tk.Tk):
                         )
 
         def apply_click_profile(self, profile):
-                self.click_duration_var.set(format_float(profile["click_duration_s"]))
-                self.click_frequency_var.set(format_float(profile["click_frequency_hz"]))
-                self.click_brightness_var.set(format_float(profile["click_brightness"]))
-                self.click_decay_var.set(format_float(profile["click_decay"]))
-                self.update_click_preset_vars(profile)
+                for which, _, _ in BEEP_TYPES:
+                        beep = profile[which]
+
+                        for setting_key, _, config_key in BEEP_SETTINGS:
+                                self.beep_vars[which][setting_key].set(format_float(beep[config_key]))
+
+                        self.update_beep_preset_vars(which, beep)
+
+                self.beats_var.set(str(profile["beats"]))
+                self.pattern = list(profile["pattern"])
+                self.draw_pattern()
+
+        def collect_profile_config(self):
+                return {
+                        "beats": len(self.pattern),
+                        "pattern": list(self.pattern),
+                        "strong": self.collect_beep("strong"),
+                        "weak": self.collect_beep("weak"),
+                }
 
         def on_save_click_profile(self):
                 name = self.click_profile_name_var.get().strip()
@@ -268,7 +407,7 @@ class MetronomeGUI(tk.Tk):
                         return
 
                 try:
-                        click_params = self.parse_click_params()
+                        config = self.collect_profile_config()
                 except Exception as e:
                         messagebox.showerror("Erreur", str(e))
                         return
@@ -284,41 +423,38 @@ class MetronomeGUI(tk.Tk):
                         if not confirmed:
                                 return
 
-                        existing_profile.update(click_params)
+                        existing_profile.update(config)
                         existing_profile["name"] = name
                 else:
-                        self.click_profiles.append({
-                                "name": name,
-                                **click_params,
-                        })
+                        self.click_profiles.append({"name": name, **config})
 
                 self.click_profiles.sort(key=lambda profile: profile["name"].lower())
                 save_click_profiles(self.click_profiles)
                 self.click_profile_var.set(name)
                 self.refresh_click_profile_menu()
-                self.status_var.set(f"Profil de bip sauvegardé : {name}")
+                self.status_var.set(f"Profil sauvegardé : {name}")
 
         def on_load_click_profile(self):
                 profile = self.find_click_profile(self.click_profile_var.get())
 
                 if profile is None:
-                        messagebox.showinfo("Info", "Sélectionne un profil de bip.")
+                        messagebox.showinfo("Info", "Sélectionne un profil.")
                         return
 
                 self.apply_click_profile(profile)
                 self.click_profile_name_var.set(profile["name"])
-                self.status_var.set(f"Profil de bip chargé : {profile['name']}")
+                self.status_var.set(f"Profil chargé : {profile['name']}")
 
         def on_delete_click_profile(self):
                 profile = self.find_click_profile(self.click_profile_var.get())
 
                 if profile is None:
-                        messagebox.showinfo("Info", "Sélectionne un profil de bip.")
+                        messagebox.showinfo("Info", "Sélectionne un profil.")
                         return
 
                 confirmed = messagebox.askyesno(
                         "Confirmer la suppression",
-                        f"Supprimer ce profil de bip ?\n\n{profile['name']}"
+                        f"Supprimer ce profil ?\n\n{profile['name']}"
                 )
 
                 if not confirmed:
@@ -329,7 +465,7 @@ class MetronomeGUI(tk.Tk):
                 save_click_profiles(self.click_profiles)
                 self.click_profile_name_var.set("")
                 self.refresh_click_profile_menu()
-                self.status_var.set(f"Profil de bip supprimé : {deleted_name}")
+                self.status_var.set(f"Profil supprimé : {deleted_name}")
 
         def on_delete_key(self, event=None):
                 if isinstance(self.focus_get(), tk.Entry):
@@ -379,42 +515,66 @@ class MetronomeGUI(tk.Tk):
                 self.current_mode = new_mode
                 self.status_var.set(f"Valeur convertie en {unit}.")
 
-        def parse_click_params(self):
-                return parse_click_params(
-                        self.click_duration_var.get(),
-                        self.click_frequency_var.get(),
-                        self.click_brightness_var.get(),
-                        self.click_decay_var.get(),
-                )
-
         def parse_params(self):
-                click_params = self.parse_click_params()
+                strong = self.collect_beep("strong")
+                weak = self.collect_beep("weak")
 
                 return parse_metronome_params(
                         self.mode_var.get(),
                         self.value_var.get(),
                         self.duration_var.get(),
-                        click_params,
+                        strong,
+                        weak,
+                        list(self.pattern),
                 )
 
-        def on_preview_click(self):
+        def temp_preview_path(self):
+                return Path(tempfile.gettempdir()) / f"bpm-metronome-preview-{int(time.time() * 1000)}.wav"
+
+        def on_preview_beep(self, which):
                 try:
-                        click_params = self.parse_click_params()
+                        beep = self.collect_beep(which)
                 except Exception as e:
                         messagebox.showerror("Erreur", str(e))
                         return
 
-                path = Path(tempfile.gettempdir()) / f"bpm-metronome-preview-{int(time.time() * 1000)}.wav"
+                path = self.temp_preview_path()
 
                 try:
-                        generate_click_preview_wav(path, click_params)
+                        generate_click_preview_wav(path, beep)
                         open_file(path)
                 except Exception as e:
                         messagebox.showerror("Erreur", str(e))
                         self.status_var.set("Erreur pendant la prévisualisation.")
                         return
 
-                self.status_var.set("Prévisualisation temporaire lancée. Clique sur Sauvegarder WAV pour garder ce son.")
+                self.status_var.set("Prévisualisation du bip lancée.")
+
+        def on_preview_measure(self):
+                try:
+                        params = self.parse_params()
+                except Exception as e:
+                        messagebox.showerror("Erreur", str(e))
+                        return
+
+                path = self.temp_preview_path()
+
+                try:
+                        generate_measure_preview_wav(
+                                path,
+                                samples_between=params["samples_between"],
+                                strong_beep=params["strong"],
+                                weak_beep=params["weak"],
+                                pattern=params["pattern"],
+                                measures=2,
+                        )
+                        open_file(path)
+                except Exception as e:
+                        messagebox.showerror("Erreur", str(e))
+                        self.status_var.set("Erreur pendant la prévisualisation de la mesure.")
+                        return
+
+                self.status_var.set("Prévisualisation de la mesure lancée (2 mesures).")
 
         def on_generate(self):
                 try:
@@ -471,19 +631,23 @@ class MetronomeGUI(tk.Tk):
                         interval = entry.get("actual_interval_s")
                         duration_s = entry.get("duration_s")
                         duration_min = duration_s / 60 if duration_s is not None else None
-                        samples = entry.get("samples_between")
+                        pattern = entry.get("pattern")
 
                         bpm_text = format_float(bpm, 9) if bpm is not None else "?"
                         interval_text = format_float(interval, 9) if interval is not None else "?"
                         duration_text = format_float(duration_min, 3) if duration_min is not None else "?"
-                        samples_text = samples if samples is not None else "?"
+
+                        if isinstance(pattern, list) and pattern:
+                                pattern_text = "".join("X" if b else "." for b in pattern)
+                        else:
+                                pattern_text = "?"
 
                         line = (
                                 f"{filename}  |  "
                                 f"{bpm_text} BPM  |  "
                                 f"{interval_text} s  |  "
                                 f"{duration_text} min  |  "
-                                f"{samples_text} samples"
+                                f"{pattern_text}"
                         )
 
                         self.listbox.insert(tk.END, line)

@@ -2,12 +2,13 @@ from features.shared.constants import SAMPLE_RATE
 from features.shared.utils import format_float, parse_float_expression
 
 
-def parse_click_params(duration_text, frequency_text, brightness_text, decay_text):
-        """Analyse et valide les réglages du bip. Lève ValueError si invalide."""
+def parse_click_params(duration_text, frequency_text, brightness_text, decay_text, level_text):
+        """Analyse et valide les réglages d'un bip. Lève ValueError si invalide."""
         click_duration_s = parse_float_expression(duration_text)
         click_frequency_hz = parse_float_expression(frequency_text)
         click_brightness = parse_float_expression(brightness_text)
         click_decay = parse_float_expression(decay_text)
+        click_level = parse_float_expression(level_text)
 
         if click_duration_s <= 0:
                 raise ValueError("La durée du bip doit être positive.")
@@ -28,15 +29,19 @@ def parse_click_params(duration_text, frequency_text, brightness_text, decay_tex
         if click_decay <= 0:
                 raise ValueError("Le decay doit être positif.")
 
+        if click_level <= 0:
+                raise ValueError("Le volume du bip doit être positif.")
+
         return {
                 "click_duration_s": click_duration_s,
                 "click_frequency_hz": click_frequency_hz,
                 "click_brightness": click_brightness,
                 "click_decay": click_decay,
+                "click_level": click_level,
         }
 
 
-def parse_metronome_params(mode, value_text, duration_text, click_params):
+def parse_metronome_params(mode, value_text, duration_text, strong_beep, weak_beep, pattern):
         """Analyse les entrées principales et calcule le timing du métronome."""
         value = parse_float_expression(value_text)
         duration_min = parse_float_expression(duration_text)
@@ -47,8 +52,13 @@ def parse_metronome_params(mode, value_text, duration_text, click_params):
         if duration_min <= 0:
                 raise ValueError("La durée doit être positive.")
 
+        if not pattern:
+                raise ValueError("Il faut au moins un temps.")
+
+        beats = len(pattern)
         duration_s = duration_min * 60
 
+        # La valeur (intervalle ou BPM) décrit la mesure complète (le battement).
         if mode == "bpm":
                 requested_bpm = value
                 requested_interval_s = 60 / requested_bpm
@@ -56,13 +66,15 @@ def parse_metronome_params(mode, value_text, duration_text, click_params):
                 requested_interval_s = value
                 requested_bpm = 60 / requested_interval_s
 
-        samples_between = round(requested_interval_s * SAMPLE_RATE)
+        # Les temps subdivisent la mesure : l'écart entre deux bips = mesure / nb temps.
+        beat_interval_s = requested_interval_s / beats
+        samples_between = round(beat_interval_s * SAMPLE_RATE)
 
         if samples_between <= 0:
                 raise ValueError("Intervalle trop court.")
 
-        # Timing réellement représenté dans le WAV
-        actual_interval_s = samples_between / SAMPLE_RATE
+        # Timing réellement représenté dans le WAV (durée réelle de la mesure)
+        actual_interval_s = (samples_between * beats) / SAMPLE_RATE
         actual_bpm = 60 / actual_interval_s
 
         return {
@@ -73,5 +85,8 @@ def parse_metronome_params(mode, value_text, duration_text, click_params):
                 "actual_interval_s": actual_interval_s,
                 "samples_between": samples_between,
                 "duration_s": duration_s,
-                **click_params,
+                "beats": beats,
+                "pattern": [bool(x) for x in pattern],
+                "strong": dict(strong_beep),
+                "weak": dict(weak_beep),
         }

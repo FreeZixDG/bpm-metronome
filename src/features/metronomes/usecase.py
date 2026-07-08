@@ -1,29 +1,36 @@
 import time
 
 from features.audio.usecase import generate_wav
+from features.click_profiles.core import BEEP_KEYS
 from features.metronomes.repository import default_filename_from_bpm, unique_path
-from features.shared.constants import (
-        DEFAULT_CLICK_BRIGHTNESS,
-        DEFAULT_CLICK_DECAY,
-        DEFAULT_CLICK_DURATION_S,
-        DEFAULT_CLICK_FREQUENCY_HZ,
-        SAMPLE_RATE,
-)
+from features.shared.constants import SAMPLE_RATE
 from features.shared.paths import OUT_DIR
+
+
+def _beeps_equal(a, b):
+        if not isinstance(a, dict) or not isinstance(b, dict):
+                return False
+
+        for key in BEEP_KEYS:
+                if abs(float(a.get(key, 0.0)) - float(b.get(key, 0.0))) >= 1e-9:
+                        return False
+
+        return True
 
 
 def find_cached_entry(entries, params):
         for entry in entries:
-                entry_click_duration_s = entry.get("click_duration_s", DEFAULT_CLICK_DURATION_S)
-                entry_click_frequency_hz = entry.get("click_frequency_hz", DEFAULT_CLICK_FREQUENCY_HZ)
-                entry_click_brightness = entry.get("click_brightness", DEFAULT_CLICK_BRIGHTNESS)
-                entry_click_decay = entry.get("click_decay", DEFAULT_CLICK_DECAY)
+                strong = entry.get("strong")
+                weak = entry.get("weak")
+                pattern = entry.get("pattern")
+
+                if not (isinstance(strong, dict) and isinstance(weak, dict) and isinstance(pattern, list)):
+                        continue
 
                 same_click = (
-                            abs(entry_click_duration_s - params["click_duration_s"]) < 1e-9
-                            and abs(entry_click_frequency_hz - params["click_frequency_hz"]) < 1e-9
-                            and abs(entry_click_brightness - params["click_brightness"]) < 1e-9
-                            and abs(entry_click_decay - params["click_decay"]) < 1e-9
+                            _beeps_equal(strong, params["strong"])
+                            and _beeps_equal(weak, params["weak"])
+                            and [bool(x) for x in pattern] == params["pattern"]
                 )
                 same_timing = (
                             entry.get("sample_rate") == SAMPLE_RATE
@@ -48,7 +55,9 @@ def generate_metronome(params):
                 path=path,
                 duration_s=params["duration_s"],
                 samples_between=params["samples_between"],
-                click_params=params,
+                strong_beep=params["strong"],
+                weak_beep=params["weak"],
+                pattern=params["pattern"],
         )
 
         return {
@@ -60,9 +69,9 @@ def generate_metronome(params):
                 "actual_bpm": params["actual_bpm"],
                 "actual_interval_s": params["actual_interval_s"],
                 "samples_between": params["samples_between"],
-                "click_duration_s": params["click_duration_s"],
-                "click_frequency_hz": params["click_frequency_hz"],
-                "click_brightness": params["click_brightness"],
-                "click_decay": params["click_decay"],
+                "beats": params["beats"],
+                "pattern": list(params["pattern"]),
+                "strong": dict(params["strong"]),
+                "weak": dict(params["weak"]),
                 "created_at": time.time(),
         }

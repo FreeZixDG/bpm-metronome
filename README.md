@@ -10,9 +10,10 @@ It is useful when you need an exact BPM or interval-based click track, with a cu
 
 - Generate precise `.wav` metronome files from a BPM or a time interval in seconds.
 - Choose the duration of the generated audio in minutes.
-- Customize the beep duration, frequency, brightness, and decay.
-- Preview the beep before generating a full file.
-- Save, load, and delete custom beep profiles.
+- Configure two beeps (strong / weak) with duration, frequency, brightness, decay, and volume.
+- Choose the number of beats per measure and mark each beat as strong or weak by clicking on circles.
+- Preview a single beep, or preview the full measure looped over 2 bars.
+- Save, load, and delete profiles that store both beeps and the accent pattern.
 - Rename, replay, open, refresh, and delete generated metronome files from the app.
 
 ## How To Use
@@ -29,11 +30,13 @@ It is useful when you need an exact BPM or interval-based click track, with a cu
 
 3. Enter the value and the duration in minutes.
 
-4. Adjust the beep settings, or load a saved profile.
+4. Adjust the strong and weak beep settings, or load a saved profile.
 
-5. Click `Previsualiser bip` to test the sound.
+5. Choose the number of beats per measure, then click the circles to set which beats are strong (lit) or weak (empty).
 
-6. Click `Sauvegarder WAV` to generate the metronome file.
+6. Click `Previsualiser bip` to test one sound, or `Previsualiser mesure` to hear the full pattern.
+
+7. Click `Sauvegarder WAV` to generate the metronome file.
 
 Generated files are stored in the app data folder and can be managed directly from the interface.
 
