@@ -66,6 +66,23 @@ src/
         └── app.py              # tkinter interface (view + controller)
 ```
 
+## Changelog
+
+### 1.1.0
+
+- Reorganized the codebase into a feature-based `src/` layout.
+- Added two configurable beeps (strong / weak) with duration, frequency, brightness, decay, and volume.
+- Added beats-per-measure selection with a clickable accent pattern (strong = lit circle, weak = empty).
+- The entered value (interval or BPM) now defines the full measure; beats subdivide it.
+- Added a full-measure preview looped over 2 bars.
+- Profiles now store both beeps and the accent pattern (old single-beep profiles are migrated automatically).
+- Reworked beep settings with sliders plus an editable value and preset buttons.
+- Display the app version in the bottom-right corner.
+
+### 1.0.0
+
+- Initial release: generate precise metronome WAV files from a BPM or interval, with a customizable beep and reusable profiles.
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
